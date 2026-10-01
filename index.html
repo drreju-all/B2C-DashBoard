@@ -253,7 +253,7 @@
               <input id="rawMember" type="file" accept=".xlsx,.xls,.csv" multiple style="display:none">
               <label for="rawXlsx" style="display:inline-block;padding:7px 13px;border:1px solid var(--serum);color:var(--serum);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:var(--card)">＋ 주문 RAW</label>
               <input id="rawXlsx" type="file" accept=".xlsx,.xls,.csv" multiple style="display:none">
-              <button type="button" id="rawOrderClear" title="업로드한 주문·회원 RAW 초기화" style="padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--mute);font:inherit;font-size:11px;cursor:pointer">초기화</button>
+              <button type="button" id="rawOrderClear" title="이 브라우저의 주문 RAW 초기화 (회원 RAW는 Supabase 원본)" style="padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--mute);font:inherit;font-size:11px;cursor:pointer">초기화</button>
             </div>
           </div>
           <div class="cap">Supabase sales_data · shop_id 11151/11372 · 2026-06-02~ (그 이전은 ERP 시트 집계, 라인 미제공)</div>
@@ -771,10 +771,93 @@ function _buyerHintUpdate(){
   var el=document.getElementById('rawXlsxHint');if(!el)return;
   var n=Object.keys(window._buyerByOrderNo||{}).length;
   var m=(window._memberIds||[]).length, o=Object.keys(window._orderMeta||{}).length;
-  el.textContent='회원 '+(m?m.toLocaleString()+'명':'미업로드')+' · 주문 '+(o?o.toLocaleString()+'건':(n?n.toLocaleString()+'건':'미업로드'));
+  var src=window._memberSource, mem=src==='loading'?'회원 불러오는 중…':src==='error'?'회원 DB 연결 실패':'회원 '+(m?m.toLocaleString()+'명':'미업로드')+' (DB)';
+  el.textContent=mem+' · 주문 '+(o?o.toLocaleString()+'건':(n?n.toLocaleString()+'건':'미업로드'));
 }
 try{window._orderMeta=JSON.parse(localStorage.getItem('b2c_order_meta_v1')||'{}');}catch(e){window._orderMeta={};}
-try{window._memberIds=JSON.parse(localStorage.getItem('b2c_members_v1')||'[]');}catch(e){window._memberIds=[];}
+// 회원 RAW: Supabase b2c_member_raw 테이블이 원본 (대시보드 업로드 → 테이블 upsert → 모든 사용자 공유)
+var MEMBER_TABLE='b2c_member_raw';
+window._memberIds=[]; window._memberSource='loading';
+var MEMBER_COLS=[
+  ['member_id',[/회원\s*(ID|아이디)/i,/^아이디$/,/^ID$/i,/아이디/,/^member_?id$/i]],
+  ['name',[/^이름$/,/^성명$/,/회원명/,/이름/,/^name$/i]],
+  ['grade',[/회원\s*등급/,/등급/,/^grade$/i]],
+  ['age',[/^나이$/,/연령/,/^age$/i]],
+  ['email',[/이메일/,/e-?mail/i]],
+  ['phone',[/휴대폰/,/휴대전화/,/핸드폰/,/연락처/,/전화/,/^phone$/i]],
+  ['points_used',[/총\s*사용\s*적립금/,/사용\s*적립금/,/^points_?used$/i]],
+  ['points_available',[/사용\s*가능\s*적립금/,/가용\s*적립금/,/잔여\s*적립금/,/^points_?available$/i]],
+  ['joined_at',[/가입일/,/등록일/,/^joined_?at$/i]],
+  ['dormant_at',[/휴면/,/^dormant_?at$/i]],
+  ['withdrawn_at',[/탈퇴일/,/^withdrawn_?at$/i]],
+  ['withdrawal_type',[/탈퇴\s*구분/,/^withdrawal_?type$/i]],
+  ['withdrawal_reason',[/탈퇴\s*사유/,/^withdrawal_?reason$/i]]
+];
+function _mText(v){if(v==null)return null;var t=String(v).trim();return t?t:null;}
+function _mNum(v){if(v==null||v==='')return 0;var n=parseFloat(String(v).replace(/[^\d.-]/g,''));return isFinite(n)?n:0;}
+function _mInt(v){if(v==null||v==='')return null;var n=parseInt(String(v).replace(/[^\d-]/g,''),10);return isFinite(n)?n:null;}
+function _mPhone(v){
+  if(v==null||v==='')return null;
+  var raw=String(v).trim(), d=raw.replace(/\D/g,'');
+  if(d.length===10&&d.charAt(0)==='1')d='0'+d;
+  if(/^01\d{8,9}$/.test(d))return d.replace(/^(\d{3})(\d{3,4})(\d{4})$/,'$1-$2-$3');
+  return raw;
+}
+// 회원 RAW 파일(xlsx/csv) → b2c_member_raw 행 배열
+function _memberRowsFromSheet(rows){
+  rows=rows.slice(_findHeader(rows,/아이디|ID|member_id/i));
+  var H=(rows[0]||[]).map(function(x){return x==null?x:String(x).replace(/\s/g,'');});
+  var col={}; MEMBER_COLS.forEach(function(c){col[c[0]]=_hcol(H,c[1]);});
+  if(col.member_id<0)col.member_id=0;
+  var out=[], seen={};
+  for(var i=1;i<rows.length;i++){
+    var r=rows[i]; if(!r)continue;
+    var g=function(k){return col[k]>=0?r[col[k]]:null;};
+    var id=_mText(g('member_id')); if(!id||seen[id])continue; seen[id]=1;
+    out.push({member_id:id,name:_mText(g('name')),grade:_mText(g('grade')),age:_mInt(g('age')),
+      email:_mText(g('email')),phone:_mPhone(g('phone')),
+      points_used:_mNum(g('points_used')),points_available:_mNum(g('points_available')),
+      joined_at:_toDate(g('joined_at'))||null,dormant_at:_toDate(g('dormant_at'))||null,withdrawn_at:_toDate(g('withdrawn_at'))||null,
+      withdrawal_type:_mText(g('withdrawal_type')),withdrawal_reason:_mText(g('withdrawal_reason')),
+      imported_at:new Date().toISOString()});
+  }
+  return {rows:out,cols:col,header:H};
+}
+async function memberUpsert(rows){
+  for(var i=0;i<rows.length;i+=500){
+    var r=await fetch(SB_URL+'/'+MEMBER_TABLE+'?on_conflict=member_id',{method:'POST',
+      headers:sbHeaders({Prefer:'resolution=merge-duplicates,return=minimal'}),body:JSON.stringify(rows.slice(i,i+500))});
+    if(!r.ok)throw new Error('Supabase 저장 실패 ('+r.status+'): '+(await r.text()));
+  }
+}
+async function memberLoadRemote(){
+  var ids=[], off=0, src='supabase';
+  try{
+    while(true){
+      var r=await fetch(SB_URL+'/'+MEMBER_TABLE+'?select=member_id&order=member_id.asc',
+        {headers:sbHeaders({Range:off+'-'+(off+999),'Range-Unit':'items'})});
+      if(r.status===416)break;
+      if(!r.ok){console.warn('member fetch',r.status);src='error';break;}
+      var b=await r.json(); b.forEach(function(x){if(x.member_id)ids.push(String(x.member_id));});
+      if(b.length<1000)break; off+=1000;
+    }
+  }catch(e){console.warn('member fetch fail',e);src='error';}
+  window._memberIds=ids; window._memberSource=src;
+  _buyerHintUpdate(); if(typeof _reorderRefresh==='function')_reorderRefresh();
+  return ids;
+}
+async function _fileRows(f){
+  var buf=await _readBuf(f);
+  if(/\.csv$/i.test(f.name)){
+    var u8=new Uint8Array(buf), txt;
+    try{txt=new TextDecoder('utf-8',{fatal:true}).decode(u8);}
+    catch(e){try{txt=new TextDecoder('euc-kr').decode(u8);}catch(e2){txt=new TextDecoder('utf-8').decode(u8);}}
+    if(txt.charCodeAt(0)===0xFEFF)txt=txt.slice(1);
+    var wb=XLSX.read(txt,{type:'string',raw:true});
+    return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:null,raw:true});
+  }
+  return _xlsxRows(buf);
+}
 function _xlsxRows(buf){var wb=XLSX.read(buf,{type:'array',cellDates:true});return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:null,raw:true});}
 function _findHeader(rows,res){for(var r=0;r<Math.min(15,rows.length);r++){var H=rows[r]||[];for(var c=0;c<H.length;c++){if(H[c]!=null&&res.test(String(H[c]).replace(/\s/g,'')))return r;}}return 0;}
 function _hcol(H,res){for(var k=0;k<res.length;k++)for(var c=0;c<H.length;c++){if(H[c]!=null&&res[k].test(String(H[c]).trim()))return c;}return -1;}
@@ -790,19 +873,22 @@ function _toDate(v){
 var _min=document.getElementById('rawMember');
 if(_min){_min.multiple=true;_min.addEventListener('change',async function(ev){
   var files=[].slice.call(ev.target.files||[]);if(!files.length||typeof XLSX==='undefined')return;
-  var set={}; (window._memberIds||[]).forEach(function(x){set[x]=1;});
+  var lbl=document.querySelector('label[for="rawMember"]'), lblTxt=lbl?lbl.textContent:'';
+  if(lbl)lbl.textContent='업로드 중…';
+  var lines=[], total=0, ok=true;
   for(var fi=0;fi<files.length;fi++){
     try{
-      var rows=_xlsxRows(await _readBuf(files[fi]));
-      rows=rows.slice(_findHeader(rows,/아이디|ID/i)); var H=(rows[0]||[]).map(function(x){return x==null?x:String(x).replace(/\s/g,'');});
-      var cI=_hcol(H,[/회원\s*(ID|아이디)/i,/^아이디$/,/^ID$/i,/아이디/,/ID/i]); if(cI<0)cI=0;
-      for(var i=1;i<rows.length;i++){var r=rows[i];if(!r||r[cI]==null)continue;var id=String(r[cI]).trim();if(id)set[id]=1;}
-    }catch(err){alert(files[fi].name+' 읽기 실패: '+err.message);}
+      var parsed=_memberRowsFromSheet(await _fileRows(files[fi]));
+      if(!parsed.rows.length){lines.push('✖ '+files[fi].name+': 아이디 열을 찾지 못했거나 데이터가 없습니다.');continue;}
+      await memberUpsert(parsed.rows);
+      total+=parsed.rows.length;
+      var miss=MEMBER_COLS.filter(function(c){return parsed.cols[c[0]]<0;}).map(function(c){return c[0];});
+      lines.push('✔ '+files[fi].name+': '+parsed.rows.length.toLocaleString()+'명 저장'+(miss.length?'\n   (파일에 없는 열: '+miss.join(', ')+')':''));
+    }catch(err){ok=false;lines.push('✖ '+files[fi].name+': '+err.message);}
   }
-  window._memberIds=Object.keys(set);
-  try{localStorage.setItem('b2c_members_v1',JSON.stringify(window._memberIds));}catch(_){}
-  _buyerHintUpdate(); _reorderRefresh();
-  alert('회원 RAW '+files.length+'개 파일 업로드 완료: 누적 회원 '+window._memberIds.length.toLocaleString()+'명');
+  await memberLoadRemote();
+  if(lbl)lbl.textContent=lblTxt;
+  alert('회원 RAW → Supabase '+MEMBER_TABLE+'\n\n'+lines.join('\n')+'\n\n이번 업로드 '+total.toLocaleString()+'명 (같은 아이디는 갱신) · DB 누적 회원 '+window._memberIds.length.toLocaleString()+'명'+(ok?'':'\n\n⚠ 일부 파일이 저장되지 않았습니다.'));
   ev.target.value='';
 });}
 // 재주문율(회원 기준, 누적): 6/2~ 주문 기준. N월 구매 회원 중 6/2~N월말 누적 주문 2건 이상인 회원 비율 (같은 달 재구매 포함)
@@ -856,6 +942,7 @@ function _reorderStats(){
 function _reorderRefresh(){window._RS=_reorderStats();if(typeof renderCmpSummary==='function')renderCmpSummary();}
 window._RS=null;
 _buyerHintUpdate();
+memberLoadRemote();
 function _readBuf(f){return new Promise(function(res,rej){var fr=new FileReader();fr.onload=function(e){res(e.target.result);};fr.onerror=rej;fr.readAsArrayBuffer(f);});}
 function _ingestOrders(buf,mapN,mapI,meta){
   var rows=_xlsxRows(buf);
@@ -907,9 +994,9 @@ if(_xin){_xin.multiple=true;_xin.addEventListener('change',async function(ev){
 });}
 var _oclr=document.getElementById('rawOrderClear');
 if(_oclr)_oclr.addEventListener('click',function(){
-  if(!confirm('업로드한 주문 RAW·회원 RAW를 모두 지울까요? (매출 데이터는 유지)'))return;
-  ['b2c_order_meta_v1','b2c_members_v1',_buyerLS,_buyerIdLS].forEach(function(k){try{localStorage.removeItem(k);}catch(_){}});
-  window._orderMeta={};window._memberIds=[];window._buyerByOrderNo={};window._buyerIdByOrderNo={};
+  if(!confirm('이 브라우저에 업로드한 주문 RAW를 지울까요? (매출 데이터 유지 · 회원 RAW는 Supabase b2c_member_raw 에 있어 여기서 지워지지 않습니다)'))return;
+  ['b2c_order_meta_v1',_buyerLS,_buyerIdLS].forEach(function(k){try{localStorage.removeItem(k);}catch(_){}});
+  window._orderMeta={};window._buyerByOrderNo={};window._buyerIdByOrderNo={};
   _buyerHintUpdate(); renderRawTable(); _reorderRefresh();
 });
 function renderRawTable(){
