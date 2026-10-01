@@ -253,7 +253,7 @@
               <input id="rawMember" type="file" accept=".xlsx,.xls,.csv" multiple style="display:none">
               <label for="rawXlsx" style="display:inline-block;padding:7px 13px;border:1px solid var(--serum);color:var(--serum);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:var(--card)">＋ 주문 RAW</label>
               <input id="rawXlsx" type="file" accept=".xlsx,.xls,.csv" multiple style="display:none">
-              <button type="button" id="rawOrderClear" title="이 브라우저의 주문 RAW 초기화 (회원 RAW는 Supabase 원본)" style="padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--mute);font:inherit;font-size:11px;cursor:pointer">초기화</button>
+              <button type="button" id="rawOrderClear" title="Supabase 에서 회원·주문 RAW 다시 불러오기" style="padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--mute);font:inherit;font-size:11px;cursor:pointer">DB 새로고침</button>
             </div>
           </div>
           <div class="cap">Supabase sales_data · shop_id 11151/11372 · 2026-06-02~ (그 이전은 ERP 시트 집계, 라인 미제공)</div>
@@ -530,7 +530,7 @@ D=RAW;
 buildRange();render();
 // ===== Supabase 설정 (상품관리 SKU 마스터 · 매출 RAW 공용) =====
 const SB_URL='https://scjjctpysdeovtwjrfkj.supabase.co/rest/v1';
-const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjampjdHB5c2Rlb3Z0d2pyZmtqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTgyOTYyNSwiZXhwIjoyMDg3NDA1NjI1fQ.CWtjVz2c6qQJ3I89bf44JZ38gsM5co-YZGWs8rRJqm0';
+const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjampjdHB5c2Rlb3Z0d2pyZmtqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4Mjk2MjUsImV4cCI6MjA4NzQwNTYyNX0.wISPruivJO29qSBZf7fzuAqm-jl2nWFHoNeb_8wedjg'; // anon(public) 키 · 쓰기 권한은 RLS 정책으로 제어
 const SKU_TABLE='b2c_sku_id';
 function sbHeaders(extra){
   var h={apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'};
@@ -763,18 +763,17 @@ renderSKU();
 function _rawSku(r){
   return (window._skuByCode||{})[r.sku_code]||(window._skuByName||{})[r.product_sub]||null;
 }
-// 주문번호 → 주문자명·주문자ID 매핑 (localStorage 캐시)
-var _buyerLS='b2c_buyer_map_v1', _buyerIdLS='b2c_buyer_id_map_v1';
-try{window._buyerByOrderNo=JSON.parse(localStorage.getItem(_buyerLS)||'{}');}catch(e){window._buyerByOrderNo={};}
-try{window._buyerIdByOrderNo=JSON.parse(localStorage.getItem(_buyerIdLS)||'{}');}catch(e){window._buyerIdByOrderNo={};}
+// 주문번호 → 주문자명·주문자ID 매핑: Supabase b2c_order_raw 테이블이 원본 (대시보드 업로드 → 테이블 upsert)
+var ORDER_TABLE='b2c_order_raw';
+window._buyerByOrderNo={}; window._buyerIdByOrderNo={}; window._orderMeta={}; window._orderSource='loading';
 function _buyerHintUpdate(){
   var el=document.getElementById('rawXlsxHint');if(!el)return;
   var n=Object.keys(window._buyerByOrderNo||{}).length;
   var m=(window._memberIds||[]).length, o=Object.keys(window._orderMeta||{}).length;
-  var src=window._memberSource, mem=src==='loading'?'회원 불러오는 중…':src==='error'?'회원 DB 연결 실패':'회원 '+(m?m.toLocaleString()+'명':'미업로드')+' (DB)';
-  el.textContent=mem+' · 주문 '+(o?o.toLocaleString()+'건':(n?n.toLocaleString()+'건':'미업로드'));
+  var src=window._memberSource, mem=src==='loading'?'회원 불러오는 중…':src==='error'?'회원 DB 연결 실패':'회원 '+(m?m.toLocaleString()+'명':'미업로드');
+  var osrc=window._orderSource, ord=osrc==='loading'?'주문 불러오는 중…':osrc==='error'?'주문 DB 연결 실패':'주문 '+(o?o.toLocaleString()+'건':'미업로드');
+  el.textContent=mem+' · '+ord+' (DB)';
 }
-try{window._orderMeta=JSON.parse(localStorage.getItem('b2c_order_meta_v1')||'{}');}catch(e){window._orderMeta={};}
 // 회원 RAW: Supabase b2c_member_raw 테이블이 원본 (대시보드 업로드 → 테이블 upsert → 모든 사용자 공유)
 var MEMBER_TABLE='b2c_member_raw';
 window._memberIds=[]; window._memberSource='loading';
@@ -942,62 +941,105 @@ function _reorderStats(){
 function _reorderRefresh(){window._RS=_reorderStats();if(typeof renderCmpSummary==='function')renderCmpSummary();}
 window._RS=null;
 _buyerHintUpdate();
-memberLoadRemote();
+memberLoadRemote(); orderLoadRemote();
 function _readBuf(f){return new Promise(function(res,rej){var fr=new FileReader();fr.onload=function(e){res(e.target.result);};fr.onerror=rej;fr.readAsArrayBuffer(f);});}
-function _ingestOrders(buf,mapN,mapI,meta){
-  var rows=_xlsxRows(buf);
-  var h0=_findHeader(rows,/주문번호|ORDER.?NO/i); rows=rows.slice(h0);
-  var H=(rows[0]||[]).map(function(x){return x==null?x:String(x).replace(/\s/g,'');});
+function _orderCols(H){
   var cO=_hcol(H,[/^주문번호$/,/^(?!주문경로|마켓|품목).*주문번호$/,/order.?no/i]), cI=_hcol(H,[/주문자\s*(ID|아이디)/i,/회원\s*(ID|아이디)/i,/구매자\s*(ID|아이디)/i,/^아이디$/,/^ID$/i]),
       cN=_hcol(H,[/주문자\s*(명|이름)/,/구매자\s*(명|이름)/,/^이름$/]), cD=_hcol(H,[/주문\s*일/,/결제\s*일/,/order.?date/i]);
   if(cO<0){cI=0;cN=1;cO=2;cD=3;} // 헤더 인식 실패 시 기존 양식(A:ID B:이름 C:주문번호 D:주문일)
-  var cP=_hcol(H,[/^총결제금액/]), cP0=_hcol(H,[/^총실결제금액\(최초/]);
-  var num=function(v){return +String(v==null?'':v).replace(/[^\d.-]/g,'')||0;};
-  var seen={}, n=0, nId=0, dmin='', dmax='', nCancel={}, nTest={};
+  return {O:cO,I:cI,N:cN,D:cD,
+    P:_hcol(H,[/^총결제금액/]), P0:_hcol(H,[/^총실결제금액\(최초/]), A:_hcol(H,[/^상품구매금액/]),
+    G:_hcol(H,[/^상품명/,/품목명/,/product/i]), Q:_hcol(H,[/^수량$/,/^주문수량/,/qty|quantity/i]),
+    C:_hcol(H,[/^주문경로주문번호/]), CI:_hcol(H,[/^주문경로품목별주문번호/])};
+}
+function _cleanNo(v){return String(v==null?'':v).trim().replace(/^="?|"$/g,'').trim();}
+// 주문 RAW 파일 → b2c_order_raw 라인 행 배열 (line_key = 주문번호|상품명|같은 주문 내 순번)
+function _orderLinesFromSheet(rows,fileName){
+  var h0=_findHeader(rows,/주문번호|ORDER.?NO/i); rows=rows.slice(h0);
+  var H=(rows[0]||[]).map(function(x){return x==null?x:String(x).replace(/\s/g,'');});
+  var c=_orderCols(H), num=function(v){return +String(v==null?'':v).replace(/[^\d.-]/g,'')||0;};
+  var g=function(r,k){return c[k]>=0?r[c[k]]:null;};
+  var out=[], occ={}, orders={}, nId=0, dmin='', dmax='', nX={}, nT={};
   for(var i=1;i<rows.length;i++){
     var r=rows[i];if(!r)continue;
-    var ono=r[cO]!=null?String(r[cO]).trim():''; if(!ono)continue;
-    var id=cI>=0&&r[cI]!=null?String(r[cI]).trim():'', name=cN>=0&&r[cN]!=null?String(r[cN]).trim():'', dt=(cD>=0?_toDate(r[cD]):'')||_onoDate(ono);
-    if(name)mapN[ono]=name;
-    if(id)mapI[ono]=id;
-    var flag=''; // x=취소 추정(현재 결제 0, 최초 실결제 >0), t=테스트계정
-    if(/테스트/.test(name)){flag='t';nTest[ono]=1;}
-    else if(cP>=0&&cP0>=0&&num(r[cP])===0&&num(r[cP0])>0){flag='x';nCancel[ono]=1;}
-    var pv=meta[ono]||['','',''];
-    meta[ono]=[id||pv[0], dt||pv[1], flag||pv[2]||''];
-    if(!seen[ono]){seen[ono]=1;n++;if(id)nId++;}
+    var ono=_cleanNo(g(r,'O')); if(!ono)continue;
+    var id=_mText(g(r,'I')), name=_mText(g(r,'N')), dt=(c.D>=0?_toDate(g(r,'D')):'')||_onoDate(ono)||null;
+    var prod=_mText(g(r,'G'))||'', flag='';
+    if(name&&/테스트/.test(name)){flag='t';nT[ono]=1;}
+    else if(c.P>=0&&c.P0>=0&&num(g(r,'P'))===0&&num(g(r,'P0'))>0){flag='x';nX[ono]=1;}
+    var ok=ono+'|'+prod; occ[ok]=(occ[ok]||0)+1;
+    out.push({line_key:ok+'|'+occ[ok],order_no:ono,order_date:dt,member_id:id,buyer_name:name,product_name:prod||null,
+      quantity:c.Q>=0?(_mInt(g(r,'Q'))||0):null,pay_total:c.P>=0?num(g(r,'P')):null,pay_actual:c.P0>=0?num(g(r,'P0')):null,product_amount:c.A>=0?num(g(r,'A')):null,
+      channel_order_no:c.C>=0?(_cleanNo(g(r,'C'))||null):null,channel_item_order_no:c.CI>=0?(_cleanNo(g(r,'CI'))||null):null,
+      flag:flag,source_file:fileName||null,imported_at:new Date().toISOString()});
+    if(!orders[ono]){orders[ono]=1;if(id)nId++;}
     if(dt){if(!dmin||dt<dmin)dmin=dt;if(!dmax||dt>dmax)dmax=dt;}
   }
-  var cn=function(c){return c>=0?String(H[c]):'❌';};
-  return {n:n,nId:nId,nX:Object.keys(nCancel).length,nT:Object.keys(nTest).length,range:dmin?(dmin+'~'+dmax):'주문일 없음',cols:'번호:'+cn(cO)+' / ID:'+cn(cI)+' / 이름:'+cn(cN)+' / 주문일:'+(cD>=0?cn(cD):'주문번호 앞 8자리'),miss:(cI<0||cN<0)};
+  var cn=function(k){return c[k]>=0?String(H[c[k]]):'❌';};
+  return {rows:out,n:Object.keys(orders).length,nId:nId,nX:Object.keys(nX).length,nT:Object.keys(nT).length,range:dmin?(dmin+'~'+dmax):'주문일 없음',
+    cols:'번호:'+cn('O')+' / ID:'+cn('I')+' / 이름:'+cn('N')+' / 상품:'+cn('G')+' / 주문일:'+(c.D>=0?cn('D'):'주문번호 앞 8자리'),miss:(c.I<0||c.N<0)};
+}
+async function orderUpsert(rows){
+  for(var i=0;i<rows.length;i+=500){
+    var r=await fetch(SB_URL+'/'+ORDER_TABLE+'?on_conflict=line_key',{method:'POST',
+      headers:sbHeaders({Prefer:'resolution=merge-duplicates,return=minimal'}),body:JSON.stringify(rows.slice(i,i+500))});
+    if(!r.ok)throw new Error('Supabase 저장 실패 ('+r.status+'): '+(await r.text()));
+  }
+}
+// DB → 주문번호별 [주문자ID, 주문일, 플래그] 사전 + 이름/ID 매핑
+async function orderLoadRemote(){
+  var meta={}, mapN={}, mapI={}, off=0, src='supabase';
+  try{
+    while(true){
+      var r=await fetch(SB_URL+'/'+ORDER_TABLE+'?select=order_no,order_date,member_id,buyer_name,flag&order=order_no.asc,line_key.asc',
+        {headers:sbHeaders({Range:off+'-'+(off+999),'Range-Unit':'items'})});
+      if(r.status===416)break;
+      if(!r.ok){console.warn('order fetch',r.status);src='error';break;}
+      var b=await r.json();
+      b.forEach(function(x){
+        var ono=x.order_no; if(!ono)return;
+        var pv=meta[ono]||['','',''];
+        var fl=x.flag||'', pf=pv[2]||'';
+        meta[ono]=[x.member_id||pv[0], x.order_date||pv[1], (fl==='t'||pf==='t')?'t':(fl||pf)];
+        if(x.buyer_name)mapN[ono]=x.buyer_name;
+        if(x.member_id)mapI[ono]=x.member_id;
+      });
+      if(b.length<1000)break; off+=1000;
+    }
+  }catch(e){console.warn('order fetch fail',e);src='error';}
+  window._orderMeta=meta; window._buyerByOrderNo=mapN; window._buyerIdByOrderNo=mapI; window._orderSource=src;
+  _buyerHintUpdate(); if(typeof renderRawTable==='function')renderRawTable(); if(typeof _reorderRefresh==='function')_reorderRefresh();
+  return meta;
 }
 var _xin=document.getElementById('rawXlsx');
 if(_xin){_xin.multiple=true;_xin.addEventListener('change',async function(ev){
   var files=[].slice.call(ev.target.files||[]);if(!files.length||typeof XLSX==='undefined')return;
-  var mapN=window._buyerByOrderNo||{}, mapI=window._buyerIdByOrderNo||{}, meta=window._orderMeta||{};
-  var before=Object.keys(meta).length, lines=[];
+  var lbl=document.querySelector('label[for="rawXlsx"]'), lblTxt=lbl?lbl.textContent:'';
+  if(lbl)lbl.textContent='업로드 중…';
+  var before=Object.keys(window._orderMeta||{}).length, lines=[], total=0, ok=true;
   for(var k=0;k<files.length;k++){
-    try{var st=_ingestOrders(await _readBuf(files[k]),mapN,mapI,meta);
-      lines.push((st.miss?'⚠️ ':'✔ ')+files[k].name+'\n   주문 '+st.n.toLocaleString()+'건(ID '+st.nId.toLocaleString()+') · '+st.range+'\n   제외: 취소 추정 '+st.nX+'건 · 테스트계정 '+st.nT+'건'+'\n   '+st.cols);}
-    catch(err){lines.push('✖ '+files[k].name+' 읽기 실패: '+err.message);}
+    try{
+      var st=_orderLinesFromSheet(await _fileRows(files[k]),files[k].name);
+      if(!st.rows.length){lines.push('✖ '+files[k].name+': 주문번호 열을 찾지 못했거나 데이터가 없습니다.');continue;}
+      await orderUpsert(st.rows); total+=st.rows.length;
+      lines.push((st.miss?'⚠️ ':'✔ ')+files[k].name+'\n   라인 '+st.rows.length.toLocaleString()+'건 · 주문 '+st.n.toLocaleString()+'건(ID '+st.nId.toLocaleString()+') · '+st.range+'\n   제외: 취소 추정 '+st.nX+'건 · 테스트계정 '+st.nT+'건'+'\n   '+st.cols);
+    }catch(err){ok=false;lines.push('✖ '+files[k].name+': '+err.message);}
   }
-  window._orderMeta=meta; window._buyerByOrderNo=mapN; window._buyerIdByOrderNo=mapI;
-  try{localStorage.setItem('b2c_order_meta_v1',JSON.stringify(meta));localStorage.setItem(_buyerLS,JSON.stringify(mapN));localStorage.setItem(_buyerIdLS,JSON.stringify(mapI));}
-  catch(_){lines.push('\n⚠️ 브라우저 저장 용량 초과: 새로고침하면 이번 업로드가 사라질 수 있습니다.');}
-  _buyerHintUpdate(); renderRawTable(); _reorderRefresh();
-  var ri=window._RS_info||{}, tot=Object.keys(meta).length;
-  alert('주문 RAW '+files.length+'개 파일 업로드\n\n'+lines.join('\n\n')+
-    '\n\n누적 주문 '+tot.toLocaleString()+'건 (신규 '+(tot-before).toLocaleString()+'건, 중복 주문번호는 1건으로 합침)'+
+  await orderLoadRemote();
+  if(lbl)lbl.textContent=lblTxt;
+  var ri=window._RS_info||{}, tot=Object.keys(window._orderMeta||{}).length;
+  alert('주문 RAW → Supabase '+ORDER_TABLE+'\n\n'+lines.join('\n\n')+
+    '\n\n이번 업로드 라인 '+total.toLocaleString()+'건 (같은 주문·상품 라인은 갱신)\nDB 누적 주문 '+tot.toLocaleString()+'건 (신규 '+Math.max(0,tot-before).toLocaleString()+'건)'+
     (ri.orders?'\n매출 데이터(6/2~) 주문 '+ri.orders.toLocaleString()+'건 중 주문자ID 매칭 '+(ri.matched||0).toLocaleString()+'건':'')+
-    ((ri.orders&&!ri.matched)?'\n※ 매칭 0건: 주문번호 형식이 매출 데이터와 다른지 확인해 주세요.':''));
+    ((ri.orders&&!ri.matched)?'\n※ 매칭 0건: 주문번호 형식이 매출 데이터와 다른지 확인해 주세요.':'')+
+    (ok?'':'\n\n⚠ 일부 파일이 저장되지 않았습니다.'));
   ev.target.value='';
 });}
 var _oclr=document.getElementById('rawOrderClear');
-if(_oclr)_oclr.addEventListener('click',function(){
-  if(!confirm('이 브라우저에 업로드한 주문 RAW를 지울까요? (매출 데이터 유지 · 회원 RAW는 Supabase b2c_member_raw 에 있어 여기서 지워지지 않습니다)'))return;
-  ['b2c_order_meta_v1',_buyerLS,_buyerIdLS].forEach(function(k){try{localStorage.removeItem(k);}catch(_){}});
-  window._orderMeta={};window._buyerByOrderNo={};window._buyerIdByOrderNo={};
-  _buyerHintUpdate(); renderRawTable(); _reorderRefresh();
+if(_oclr)_oclr.addEventListener('click',async function(){
+  _oclr.disabled=true; _oclr.textContent='불러오는 중…';
+  try{ await memberLoadRemote(); await orderLoadRemote(); }
+  finally{ _oclr.disabled=false; _oclr.textContent='DB 새로고침'; }
 });
 function renderRawTable(){
   var tb=document.querySelector('#rawTable tbody');if(!tb)return;
