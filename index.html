@@ -215,7 +215,7 @@
             <div class="brand-title">상품 <span>관리</span></div></div>
           <div class="head-meta">SKU 마스터<b id="skuCount"></b></div>
         </div>
-        <div class="note">※ 대시보드 매출 반영 시 상품명(product_sub)을 기준으로 아래 상품코드·판매가·수량이 매칭됩니다.</div>
+        <div class="note">※ SKU 마스터는 Supabase <b>b2c_sku_id</b> 테이블과 연동됩니다. 여기서 저장하면 모든 사용자에게 동일하게 반영되며, 매출 집계 시 SKU 코드(우선)·상품명(product_sub) 기준으로 상품코드·판매가가 매칭됩니다.</div>
         <div class="panel" style="margin-top:6px">
           <h3>SKU 마스터<span class="sku-dirty" id="skuDirty" style="display:none">• 미저장 변경</span>
             <div class="sku-tools">
@@ -224,7 +224,7 @@
               <button type="button" id="skuEditBtn" onclick="_skuToggleEdit()">추가/수정</button>
             </div>
           </h3>
-          <div class="cap" id="skuCap">상품명 기준 매핑표 · 판매가 단위 원</div>
+          <div class="cap" id="skuCap">Supabase b2c_sku_id 불러오는 중…</div>
           <table id="skuTable"><thead><tr><th>SKU ID</th><th>상품명</th><th>상품코드</th><th class="r">판매가</th><th class="r">단가(VAT-)</th><th style="width:40px"></th></tr></thead><tbody></tbody></table>
         </div>
       </div>
@@ -528,30 +528,56 @@ HIST=RAW.hist;PRODM=RAW.prodm;
 LINES=[];
 D=RAW;
 buildRange();render();
-// SKU label 고정 · localStorage 오버레이 보정
+// ===== Supabase 설정 (상품관리 SKU 마스터 · 매출 RAW 공용) =====
+const SB_URL='https://scjjctpysdeovtwjrfkj.supabase.co/rest/v1';
+const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjampjdHB5c2Rlb3Z0d2pyZmtqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTgyOTYyNSwiZXhwIjoyMDg3NDA1NjI1fQ.CWtjVz2c6qQJ3I89bf44JZ38gsM5co-YZGWs8rRJqm0';
+const SKU_TABLE='b2c_sku_id';
+function sbHeaders(extra){
+  var h={apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'};
+  if(extra)Object.keys(extra).forEach(function(k){h[k]=extra[k];});
+  return h;
+}
+// SKU 마스터 원본 = Supabase b2c_sku_id 테이블. HTML 임베드(D.SKU)는 테이블 접근 실패 시 폴백(읽기 전용).
 var SKU_FIX={'RJPDCR22A-07':{label:'PDRN 크림 60ml',code:'PDRN 60'},'RJPDSR22A-02':{label:'PDRN 코퍼세럼',code:'Peptide'},'RJPDST22C-01':{label:'PDRN 시그니처세트',code:'Korean'}};
 var SKU_DEF=JSON.parse(JSON.stringify(D.SKU||[]));
+var _skuRemote=false;   // true = Supabase 테이블에서 로드됨
 function _skuNormalize(arr){
-  var have={};
   arr.forEach(function(s){
-    var k=String(s.sku||'').trim(); s.sku=k; have[k]=1;
-    var f=SKU_FIX[k]; if(f){ s.label=f.label; s.code=f.code; }
+    var k=String(s.sku||'').trim(); s.sku=k;
+    if(!_skuRemote){ var f=SKU_FIX[k]; if(f){ s.label=f.label; s.code=f.code; } }
     if(!s.label||s.label==='새 상품') s.label=s.name;
   });
-  SKU_DEF.forEach(function(d){ if(!have[d.sku]) arr.push(JSON.parse(JSON.stringify(d))); });
+  if(!_skuRemote){
+    var have={}; arr.forEach(function(s){have[s.sku]=1;});
+    SKU_DEF.forEach(function(d){ if(!have[d.sku]) arr.push(JSON.parse(JSON.stringify(d))); });
+  }
   return arr;
+}
+async function skuFetchRemote(){
+  try{
+    var r=await fetch(SB_URL+'/'+SKU_TABLE+'?select=sku_id,product_name,product_code,sale_price,label,sort_order'
+      +'&is_active=eq.true&order=sort_order.asc,sku_id.asc',{headers:sbHeaders()});
+    if(!r.ok){console.warn('sku fetch',r.status,await r.text());return null;}
+    var rows=await r.json();
+    if(!Array.isArray(rows)||!rows.length)return null;
+    return rows.map(function(x){return {sku:x.sku_id,name:x.product_name||'',code:x.product_code||'ETC',price:+x.sale_price||0,label:x.label||x.product_name||''};});
+  }catch(e){console.warn('sku fetch fail',e);return null;}
+}
+async function skuLoadRemote(){
+  var rows=await skuFetchRemote();
+  if(rows){ _skuRemote=true; D.SKU=_skuNormalize(rows); }
+  else { _skuRemote=false; D.SKU=_skuNormalize(D.SKU||[]); }
+  if(typeof _skuCapRefresh==='function')_skuCapRefresh();
+  if(typeof renderSKU==='function')renderSKU();
+  return D.SKU;
 }
 // Supabase 라이브 반영: 2026-06-02~ · shop_id 11151/11372 · 판매가(SKU.price) 기준
 (async function(){
-  const SB='https://scjjctpysdeovtwjrfkj.supabase.co/rest/v1';
-  const K='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjampjdHB5c2Rlb3Z0d2pyZmtqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTgyOTYyNSwiZXhwIjoyMDg3NDA1NjI1fQ.CWtjVz2c6qQJ3I89bf44JZ38gsM5co-YZGWs8rRJqm0';
+  const SB=SB_URL, K=SB_KEY;
   const SHOP={11372:'자사몰(B2C)',11151:'네이버 스마트스토어'};
   const sidx={'자사몰(B2C)':0,'네이버 스마트스토어':1};
-  // SKU 매칭: sku_code(RJ...) 우선, product_sub(상품명) 폴백
-  // 주의: localStorage(b2c_sku_v1) 오버레이가 이 시점 이후 로드되므로 여기서 병합
-  let _sku=(D.SKU||[]).slice();
-  try{var _ls=localStorage.getItem('b2c_sku_v1'); if(_ls){var _a=JSON.parse(_ls); if(Array.isArray(_a)&&_a.length) _sku=_a;}}catch(e){}
-  _sku=_skuNormalize(_sku);
+  // SKU 매칭: sku_code(RJ...) 우선, product_sub(상품명) 폴백 · SKU 마스터는 Supabase 테이블에서 먼저 로드
+  let _sku=(await skuLoadRemote()).slice();
   const skuById={}, skuByName={};
   _sku.forEach(s=>{
     const v={label:(s.label&&s.label!=='새 상품')?s.label:s.name,price:+s.price||0,code:s.code};
@@ -635,13 +661,12 @@ function _skuNormalize(arr){
   buildRange(); render();
   if(typeof buildCmpYear==='function'){buildCmpYear();renderCmpSummary();if(typeof renderCmpProd==='function')renderCmpProd();}
 })();
-// SKU CRUD: 수정 모드에서만 편집 가능. 저장은 localStorage(b2c_sku_v1) 오버레이.
-var _skuDirty=false, _skuEdit=false;
+// SKU CRUD: 수정 모드에서만 편집 가능. 저장은 Supabase b2c_sku_id 테이블에 upsert(삭제는 is_active=false).
+var _skuDirty=false, _skuEdit=false, _skuDeleted=[];
 function _skuMark(d){_skuDirty=d; var el=document.getElementById('skuDirty'); if(el) el.style.display=d?'':'none';}
-function _skuLoadLocal(){
-  try{var s=localStorage.getItem('b2c_sku_v1'); if(s){var a=JSON.parse(s); if(Array.isArray(a)&&a.length) D.SKU=a;}}catch(e){}
-  D.SKU=_skuNormalize(D.SKU||[]);
-}
+function _skuCapDefault(){ return _skuRemote?'Supabase b2c_sku_id 연동 · 상품명 기준 매핑 · 판매가 단위 원':'⚠ Supabase 연결 실패 · HTML 임베드 데이터 표시 중 (저장 불가)'; }
+function _skuCapRefresh(){ var c=document.getElementById('skuCap'); if(c&&!_skuEdit) c.textContent=_skuCapDefault(); }
+function _skuLoadLocal(){ D.SKU=_skuNormalize(D.SKU||[]); }
 function _skuToggleEdit(){
   if(_skuEdit && _skuDirty){
     if(!confirm('저장하지 않은 변경사항이 있습니다. 편집을 종료할까요? (변경분은 유지되며 저장 버튼을 눌러야 반영됩니다)')) return;
@@ -650,7 +675,7 @@ function _skuToggleEdit(){
   document.getElementById('skuEditBtn').textContent=_skuEdit?'취소':'추가/수정';
   document.getElementById('skuAddBtn').style.display=_skuEdit?'':'none';
   document.getElementById('skuSaveBtn').style.display=_skuEdit?'':'none';
-  document.getElementById('skuCap').textContent=_skuEdit?'편집 모드 · 셀 클릭하여 수정 · 저장 필수':'상품명 기준 매핑표 · 판매가 단위 원';
+  document.getElementById('skuCap').textContent=_skuEdit?'편집 모드 · 셀 클릭하여 수정 · 저장 시 Supabase 반영':_skuCapDefault();
   renderSKU();
 }
 var CODE_ORDER=['PDRN','PDRN 60','LIP','MASK','CERAMIDE','HPR','PDLLA','Mela Cream','GIFT','Sun Serum','Hair Scalp','Peptide','Korean','파우치'];
@@ -683,6 +708,7 @@ function renderSKU(){
       el.addEventListener('blur', function(){
         var tr=el.closest('tr'), i=+tr.dataset.i, k=el.dataset.k, v=el.textContent.trim();
         if(k==='price') v=+v.replace(/[^\d.-]/g,'')||0;
+        if(k==='sku'){ v=v.trim(); var prev=D.SKU[i].sku; if(prev&&prev!==v) _skuDeleted.push(prev); }
         D.SKU[i][k]=v;
         if(k==='price'||k==='code') renderSKU();
       });
@@ -697,17 +723,39 @@ function _skuAdd(){
 function _skuDel(i){
   var s=D.SKU[i]; if(!s) return;
   if(!confirm('"'+(s.name||s.sku)+'" 항목을 삭제하시겠습니까?')) return;
+  if(s.sku) _skuDeleted.push(s.sku);
   D.SKU.splice(i,1); _skuMark(true); renderSKU();
 }
-function _skuSave(){
-  D.SKU.forEach(function(s){ if(!s.label||s.label==='새 상품') s.label=s.name; });
+async function _skuSave(){
+  D.SKU.forEach(function(s){ s.sku=String(s.sku||'').trim(); s.name=String(s.name||'').trim(); if(!s.label||s.label==='새 상품') s.label=s.name; });
+  if(!_skuRemote){ alert('Supabase 테이블(b2c_sku_id)에 연결되지 않아 저장할 수 없습니다. 네트워크·키·RLS 정책을 확인해 주세요.'); return; }
+  var ids={};
+  for(var i=0;i<D.SKU.length;i++){
+    var s=D.SKU[i];
+    if(!s.sku||!s.name){ alert('SKU ID와 상품명은 비워둘 수 없습니다. ('+(s.sku||s.name||'빈 행')+')'); return; }
+    if(ids[s.sku]){ alert('SKU ID가 중복됩니다: '+s.sku); return; }
+    ids[s.sku]=1;
+  }
+  _skuSortByCode(D.SKU);
+  var payload=D.SKU.map(function(s,i){ return {sku_id:s.sku,product_name:s.name,product_code:s.code||'ETC',sale_price:Math.round(+s.price||0),label:s.label||s.name,sort_order:i*10,is_active:true}; });
+  var btn=document.getElementById('skuSaveBtn'); if(btn){btn.disabled=true;btn.textContent='저장 중…';}
   try{
-    localStorage.setItem('b2c_sku_v1', JSON.stringify(D.SKU));
-    _skuMark(false);
+    var r=await fetch(SB_URL+'/'+SKU_TABLE+'?on_conflict=sku_id',{method:'POST',
+      headers:sbHeaders({Prefer:'resolution=merge-duplicates,return=minimal'}),body:JSON.stringify(payload)});
+    if(!r.ok) throw new Error('저장 실패 ('+r.status+'): '+(await r.text()));
+    var del=_skuDeleted.filter(function(id,idx,arr){ return id&&!ids[id]&&arr.indexOf(id)===idx; });
+    if(del.length){
+      var q=del.map(function(id){return '"'+id.replace(/"/g,'')+'"';}).join(',');
+      var d=await fetch(SB_URL+'/'+SKU_TABLE+'?sku_id=in.('+encodeURIComponent(q)+')',{method:'PATCH',
+        headers:sbHeaders({Prefer:'return=minimal'}),body:JSON.stringify({is_active:false})});
+      if(!d.ok) throw new Error('삭제 반영 실패 ('+d.status+'): '+(await d.text()));
+    }
+    _skuDeleted=[]; _skuMark(false);
     if(typeof renderCmpProd==='function')renderCmpProd();
     if(_skuEdit)_skuToggleEdit();
-    alert('저장되었습니다. ('+D.SKU.length+'종) 매출 재집계를 위해 새로고침합니다.'); location.reload();
-  }catch(e){ alert('저장 실패: '+e.message); }
+    alert('Supabase에 저장되었습니다. ('+D.SKU.length+'종) 매출 재집계를 위해 새로고침합니다.'); location.reload();
+  }catch(e){ alert(e.message); }
+  finally{ if(btn){btn.disabled=false;btn.textContent='저장';} }
 }
 _skuLoadLocal();
 renderSKU();
