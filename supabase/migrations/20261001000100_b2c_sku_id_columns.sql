@@ -1,0 +1,63 @@
+-- 기존 테이블 public."B2C_SKU_ID" 에 상품관리 탭 컬럼 추가 + 현재 대시보드 SKU 14종 입력
+-- 실행: Supabase Dashboard > SQL Editor 에 전체 붙여넣기 > Run (여러 번 실행해도 안전)
+
+-- 1) 상품관리 탭 컬럼 (SKU ID · 상품명 · 상품코드 · 판매가 · 단가(VAT-))
+alter table public."B2C_SKU_ID"
+  add column if not exists sku_id            text,                 -- SKU ID
+  add column if not exists product_name      text,                 -- 상품명 (sales_data.product_sub 매칭)
+  add column if not exists product_code      text,                 -- 상품코드 (PDRN, LIP, MASK ...)
+  add column if not exists sale_price        integer not null default 0, -- 판매가 (원, VAT 포함)
+  add column if not exists unit_price_ex_vat integer generated always as (round(sale_price / 1.1)) stored, -- 단가(VAT-)
+  add column if not exists label             text,                 -- 대시보드 표시용 짧은 이름
+  add column if not exists sort_order        integer not null default 999,
+  add column if not exists is_active         boolean not null default true,
+  add column if not exists updated_at        timestamptz not null default now();
+
+-- SKU ID 는 중복 불가 (upsert 키)
+create unique index if not exists b2c_sku_id_sku_id_key on public."B2C_SKU_ID" (sku_id);
+
+comment on column public."B2C_SKU_ID".sku_id            is 'SKU ID';
+comment on column public."B2C_SKU_ID".product_name      is '상품명';
+comment on column public."B2C_SKU_ID".product_code      is '상품코드';
+comment on column public."B2C_SKU_ID".sale_price        is '판매가 (VAT 포함, 원)';
+comment on column public."B2C_SKU_ID".unit_price_ex_vat is '단가(VAT-) = round(판매가/1.1)';
+
+-- 2) updated_at 자동 갱신
+create or replace function public.set_updated_at() returns trigger
+language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end $$;
+
+drop trigger if exists b2c_sku_id_set_updated_at on public."B2C_SKU_ID";
+create trigger b2c_sku_id_set_updated_at
+  before update on public."B2C_SKU_ID"
+  for each row execute function public.set_updated_at();
+
+-- 3) 현재 대시보드 상품관리 탭의 SKU 14종 입력 (판매가 0 = 미정)
+insert into public."B2C_SKU_ID" (sku_id, product_name, product_code, sale_price, label, sort_order) values
+  ('RJPDCR22A-10', '(1개입) PDRN 리쥬비네이팅 크림 30ml', 'PDRN', 45000, 'PDRN 크림 30ml', 0),
+  ('RJPDCR22A-07', '(1개입) PDRN 리쥬비네이팅 크림 60ml', 'PDRN 60', 0, 'PDRN 크림 60ml', 10),
+  ('RJPDLP22A-03', '(1개입) PDRN 리쥬비네이팅 립세럼 10ml', 'LIP', 16000, 'PDRN 립세럼', 20),
+  ('RJPDMK22F-01', '(6매) PDRN 리쥬비네이팅 마스크 36ml', 'MASK', 29000, 'PDRN 마스크 6P', 30),
+  ('RJCMCR22A-01', '(1개입) 엘씨 세라마이드 베리어 크림 90ml', 'CERAMIDE', 39000, '세라마이드 크림', 40),
+  ('RJPLCR22A-01', '(1개입) PDLLA 퍼밍 크림', 'PDLLA', 45000, 'PDLLA 퍼밍크림', 60),
+  ('RJRTSR22A-01', '(1개입) 레티노 멜라 세럼 50ml', 'Mela Cream', 48000, '레티노멜라 세럼', 70),
+  ('RJRTCR22A-01', '(1개입) 레티노 멜라 톤 크림', 'Mela Cream', 28000, '레티노멜라 톤크림', 70),
+  ('RJCOSD92F-01', '리쥬올 어드밴스드 스킨케어 프로그램 세트', 'GIFT', 132000, '기프트세트 6P', 80),
+  ('RJPDSR22A-03', '(1개입) PDRN 카밍 선 세럼 50ml', 'Sun Serum', 25000, 'PDRN 카밍선세럼', 90),
+  ('RJPDSR22A-01', '(1개입) PDRN 헤어 덴시티 스칼프 세럼 15ml', 'Hair Scalp', 25000, 'PDRN 헤어세럼', 100),
+  ('RJPDSR22A-02', '(1개입) PDRN 코퍼 펩타이드 세럼 30ml', 'Peptide', 0, 'PDRN 코퍼세럼', 110),
+  ('RJPDST22C-01', 'PDRN 시그니처 세트', 'Korean', 0, 'PDRN 시그니처세트', 120),
+  ('RJCOST99C-01', 'PDRN 파우치 3종 5ml', 'ETC', 0, '트라이얼 키트 3P', 140)
+on conflict (sku_id) do update set
+  product_name = excluded.product_name,
+  product_code = excluded.product_code,
+  sale_price   = excluded.sale_price,
+  label        = excluded.label,
+  sort_order   = excluded.sort_order;
+
+-- 4) 확인
+select sku_id, product_name, product_code, sale_price, unit_price_ex_vat
+from public."B2C_SKU_ID" order by sort_order, sku_id;
